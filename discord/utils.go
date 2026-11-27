@@ -1,69 +1,59 @@
 package discord
 
 import (
-	"encoding/base64"
-	"fmt"
-	"math/rand"
-	"strings"
+	"crypto/rand"
+	"encoding/hex"
+	mrand "math/rand/v2"
+	"strconv"
 	"time"
-
-	"github.com/QuartzWarrior/discordgo-self/types"
-	"github.com/goccy/go-json"
 )
 
+// DiscordEpoch is the first millisecond of 2015, the epoch of Discord snowflakes.
 const DiscordEpoch = 1420070400000
 
+// UtcNow returns the current time in UTC.
 func UtcNow() time.Time {
 	return time.Now().UTC()
 }
 
+// TimeSnowflake returns the lowest (or, with high, the highest) snowflake
+// that could have been created at dt. Useful for before/after pagination.
 func TimeSnowflake(dt time.Time, high bool) int64 {
-	discordMillis := dt.UnixNano()/1e6 - DiscordEpoch
+	discordMillis := dt.UnixMilli() - DiscordEpoch
 	if high {
 		return (discordMillis << 22) + (1<<22 - 1)
 	}
 	return discordMillis << 22
 }
 
-func GenerateNonce() string {
-	return fmt.Sprintf("%d", TimeSnowflake(UtcNow(), false))
-}
-
-func GenerateSessionID() string {
-	s := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(s)
-	chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-	length := 16
-	var b strings.Builder
-	for i := 0; i < length; i++ {
-		b.WriteRune(chars[r.Intn(len(chars))])
-	}
-	return b.String()
-}
-
-func GenerateSuperProperties(gateway *Gateway) string {
-	super := &types.SuperProperties{
-		OS:                     gateway.Config.Os,
-		Browser:                gateway.Config.Browser,
-		Device:                 gateway.Config.Device,
-		SystemLocale:           gateway.Selfbot.User.Locale,
-		BrowserUserAgent:       gateway.Config.UserAgent,
-		BrowserVersion:         gateway.Config.BrowserVersion,
-		OSVersion:              gateway.Config.OsVersion,
-		Referrer:               "",
-		ReferringDomain:        "",
-		ReferrerCurrent:        "",
-		ReferringDomainCurrent: "",
-		ReleaseChannel:         "stable",
-		ClientBuildNumber:      gateway.ClientBuildNumber,
-		ClientEventSource:      nil,
-	}
-	jsonData, err := json.Marshal(super)
+// SnowflakeTime returns the creation time of a Discord ID.
+func SnowflakeTime(id string) (time.Time, error) {
+	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
-		fmt.Println("Error marshalling super properties:", err)
-		return ""
+		return time.Time{}, err
 	}
-	base64Data := base64.StdEncoding.EncodeToString(jsonData)
+	return time.UnixMilli((n >> 22) + DiscordEpoch).UTC(), nil
+}
 
-	return base64Data
+// GenerateNonce returns a snowflake-like nonce for messages and interactions.
+func GenerateNonce() string {
+	return strconv.FormatInt(TimeSnowflake(UtcNow(), false)|mrand.Int64N(1<<22), 10)
+}
+
+// GenerateSessionID returns a random 32 character hex session ID.
+func GenerateSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		for i := range b {
+			b[i] = byte(mrand.IntN(256))
+		}
+	}
+	return hex.EncodeToString(b)
+}
+
+// GenerateSuperProperties returns the base64 encoded X-Super-Properties header.
+//
+// Deprecated: use gateway.SuperPropertiesHeader.
+func GenerateSuperProperties(gateway *Gateway) string {
+	return gateway.SuperPropertiesHeader()
 }

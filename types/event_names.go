@@ -3,6 +3,10 @@ package types
 const (
 	EventNameHello                               = "HELLO"
 	EventNameReady                               = "READY"
+	EventNameReadySupplemental                   = "READY_SUPPLEMENTAL"
+	EventNameRelationshipAdd                     = "RELATIONSHIP_ADD"
+	EventNameRelationshipUpdate                  = "RELATIONSHIP_UPDATE"
+	EventNameRelationshipRemove                  = "RELATIONSHIP_REMOVE"
 	EventNameResumed                             = "RESUMED"
 	EventNameReconnect                           = "RECONNECT"
 	EventNameInvalidSession                      = "INVALID_SESSION"

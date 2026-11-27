@@ -2,71 +2,283 @@ package discord
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 
-	"github.com/QuartzWarrior/discordgo-self/types"
+	"github.com/goccy/go-json"
+	"github.com/headd16/goself/types"
 )
 
-type Handlers struct {
-	OnReady             []func(data *types.ReadyEventData)
-	OnMessageCreate     []func(data *types.MessageEventData)
-	OnMessageUpdate     []func(data *types.MessageEventData)
-	OnGuildMembersChunk []func(data *types.GuildMembersChunkEventData)
-	OnReconnect         []func()
-	mutex               sync.Mutex
-	OnInvalidated       []func()
+// eventSpec describes the payload of an event and the handler signature it
+// accepts.
+type eventSpec struct {
+	signature string
+	decode    func([]byte) (any, error) // nil when the event carries no data
+	wrap      func(fn any) (func(any), bool)
+	accepts   func(v any) bool // reports whether a pre-decoded value fits
 }
 
-func (handlers *Handlers) Add(event string, function any) error {
-	handlers.mutex.Lock()
-	defer handlers.mutex.Unlock()
+func typedEvent[T any]() eventSpec {
+	var zero T
+	return eventSpec{
+		signature: fmt.Sprintf("func(*%T)", zero),
+		accepts: func(v any) bool {
+			_, ok := v.(*T)
+			return ok
+		},
+		decode: func(b []byte) (any, error) {
+			v := new(T)
+			if err := json.Unmarshal(b, v); err != nil {
+				return nil, err
+			}
+			return v, nil
+		},
+		wrap: func(fn any) (func(any), bool) {
+			f, ok := fn.(func(*T))
+			if !ok {
+				return nil, false
+			}
+			return func(v any) { f(v.(*T)) }, true
+		},
+	}
+}
 
-	failed := false
+func noDataEvent() eventSpec {
+	return eventSpec{
+		signature: "func()",
+		wrap: func(fn any) (func(any), bool) {
+			f, ok := fn.(func())
+			if !ok {
+				return nil, false
+			}
+			return func(any) { f() }, true
+		},
+	}
+}
 
-	switch event {
-	case types.GatewayEventReady:
-		if function, ok := function.(func(data *types.ReadyEventData)); ok {
-			handlers.OnReady = append(handlers.OnReady, function)
-		} else {
-			failed = true
-		}
-	case types.GatewayEventMessageCreate:
-		if function, ok := function.(func(data *types.MessageEventData)); ok {
-			handlers.OnMessageCreate = append(handlers.OnMessageCreate, function)
-		} else {
-			failed = true
-		}
-	case types.GatewayEventMessageUpdate:
-		if function, ok := function.(func(data *types.MessageEventData)); ok {
-			handlers.OnMessageUpdate = append(handlers.OnMessageUpdate, function)
-		} else {
-			failed = true
-		}
-	case types.GatewayEventInvalidated:
-		if function, ok := function.(func()); ok {
-			handlers.OnInvalidated = append(handlers.OnInvalidated, function)
-		} else {
-			failed = true
-		}
-	case types.EventNameGuildMembersChunk:
-		if function, ok := function.(func(data *types.GuildMembersChunkEventData)); ok {
-			handlers.OnGuildMembersChunk = append(handlers.OnGuildMembersChunk, function)
-		} else {
-			failed = true
-		}
-	case types.GatewayEventReconnect:
-		if function, ok := function.(func()); ok {
-			handlers.OnReconnect = append(handlers.OnReconnect, function)
-		} else {
-			failed = true
-		}
-	default:
-		return errors.New("failed to match event to gateway event")
+func errorEvent() eventSpec {
+	return eventSpec{
+		signature: "func(error)",
+		wrap: func(fn any) (func(any), bool) {
+			f, ok := fn.(func(error))
+			if !ok {
+				return nil, false
+			}
+			return func(v any) {
+				err, _ := v.(error)
+				f(err)
+			}, true
+		},
+	}
+}
+
+var eventSpecs = map[string]eventSpec{
+	types.GatewayEventReady:   typedEvent[types.ReadyEventData](),
+	types.GatewayEventResumed: noDataEvent(),
+
+	types.GatewayEventMessageCreate:         typedEvent[types.MessageEventData](),
+	types.GatewayEventMessageUpdate:         typedEvent[types.MessageEventData](),
+	types.GatewayEventMessageDelete:         typedEvent[types.MessageDeleteEventData](),
+	types.GatewayEventMessageDeleteBulk:     typedEvent[types.MessageDeleteBulkEventData](),
+	types.GatewayEventMessageReactionAdd:    typedEvent[types.MessageReactionEventData](),
+	types.GatewayEventMessageReactionRemove: typedEvent[types.MessageReactionEventData](),
+	types.GatewayEventTypingStart:           typedEvent[types.TypingStartEventData](),
+	types.GatewayEventPresenceUpdate:        typedEvent[types.PresenceUpdateEventData](),
+	types.GatewayEventUserUpdate:            typedEvent[types.User](),
+
+	types.GatewayEventGuildCreate:       typedEvent[types.Guild](),
+	types.GatewayEventGuildUpdate:       typedEvent[types.Guild](),
+	types.GatewayEventGuildDelete:       typedEvent[types.GuildDeleteEventData](),
+	types.GatewayEventGuildMemberAdd:    typedEvent[types.GuildMemberEventData](),
+	types.GatewayEventGuildMemberUpdate: typedEvent[types.GuildMemberEventData](),
+	types.GatewayEventGuildMemberRemove: typedEvent[types.GuildMemberEventData](),
+	types.GatewayGuildMembersChunk:      typedEvent[types.GuildMembersChunkEventData](),
+
+	types.GatewayEventChannelCreate: typedEvent[types.Channel](),
+	types.GatewayEventChannelUpdate: typedEvent[types.Channel](),
+	types.GatewayEventChannelDelete: typedEvent[types.Channel](),
+	types.GatewayEventThreadCreate:  typedEvent[types.Channel](),
+	types.GatewayEventThreadUpdate:  typedEvent[types.Channel](),
+	types.GatewayEventThreadDelete:  typedEvent[types.Channel](),
+
+	types.GatewayEventThreadListSync:    typedEvent[types.ThreadListSyncEventData](),
+	types.GatewayEventGuildRoleCreate:   typedEvent[types.GuildRoleEventData](),
+	types.GatewayEventGuildRoleUpdate:   typedEvent[types.GuildRoleEventData](),
+	types.GatewayEventGuildRoleDelete:   typedEvent[types.GuildRoleDeleteEventData](),
+	types.GatewayEventGuildEmojisUpdate: typedEvent[types.GuildEmojisUpdateEventData](),
+
+	types.GatewayEventRelationshipAdd:    typedEvent[types.Relationship](),
+	types.GatewayEventRelationshipUpdate: typedEvent[types.Relationship](),
+	types.GatewayEventRelationshipRemove: typedEvent[types.Relationship](),
+
+	types.GatewayEventInteractionCreate:  typedEvent[types.InteractionEventData](),
+	types.GatewayEventInteractionSuccess: typedEvent[types.InteractionEventData](),
+	types.GatewayEventInteractionFailure: typedEvent[types.InteractionEventData](),
+
+	// Events generated by the library itself.
+	types.GatewayEventReconnect:   noDataEvent(),
+	types.GatewayEventInvalidated: noDataEvent(),
+	types.GatewayEventDisconnect:  errorEvent(),
+}
+
+// internalEvents are produced by the library, not by Discord, so they have no
+// raw payload.
+var internalEvents = map[string]bool{
+	types.GatewayEventReconnect:   true,
+	types.GatewayEventInvalidated: true,
+	types.GatewayEventDisconnect:  true,
+}
+
+type handler struct {
+	raw   func(*types.RawEvent)
+	typed func(any)
+}
+
+// Handlers stores the event handlers of a gateway. It is safe for concurrent use.
+type Handlers struct {
+	mu      sync.RWMutex
+	byEvent map[string][]handler
+}
+
+// Add registers fn for event. fn must have the signature documented on the
+// event constant (see types.GatewayEvent*), or be a func(*types.RawEvent),
+// which works for every Discord event, including ones without a typed payload.
+func (h *Handlers) Add(event string, fn any) error {
+	if fn == nil {
+		return errors.New("discord: handler is nil")
 	}
 
-	if failed {
-		return errors.New("function signature was not correct for the specified event")
+	var hd handler
+	if raw, ok := fn.(func(*types.RawEvent)); ok {
+		if internalEvents[event] {
+			return fmt.Errorf("discord: event %s has no raw payload, use %s", event, eventSpecs[event].signature)
+		}
+		hd.raw = raw
+	} else {
+		spec, ok := eventSpecs[event]
+		if !ok {
+			return fmt.Errorf("discord: event %q has no typed payload; register a func(*types.RawEvent) handler instead", event)
+		}
+		wrapped, ok := spec.wrap(fn)
+		if !ok {
+			return fmt.Errorf("discord: handler for %s must be %s, got %T", event, spec.signature, fn)
+		}
+		hd.typed = wrapped
 	}
 
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.byEvent == nil {
+		h.byEvent = make(map[string][]handler)
+	}
+	h.byEvent[event] = append(h.byEvent[event], hd)
 	return nil
+}
+
+// Clear removes every handler registered for event.
+func (h *Handlers) Clear(event string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.byEvent, event)
+}
+
+// ClearAll removes every handler.
+func (h *Handlers) ClearAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.byEvent = nil
+}
+
+func (h *Handlers) get(event string) []handler {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.byEvent[event]
+}
+
+// dispatch calls the handlers of a Discord dispatch event. pre is the payload
+// already decoded by the state cache (or nil); it is reused when its type
+// matches so events are not decoded twice.
+func (h *Handlers) dispatch(g *Gateway, ev *types.RawEvent, pre any) {
+	specific := h.get(ev.Type)
+	all := h.get(types.GatewayEventAll)
+	if len(specific) == 0 && len(all) == 0 {
+		return
+	}
+
+	var value any
+	decoded := false
+	if spec, ok := eventSpecs[ev.Type]; ok && pre != nil && spec.accepts != nil && spec.accepts(pre) {
+		value, decoded = pre, true
+	}
+	calls := make([]func(), 0, len(all)+len(specific))
+	for _, hd := range all {
+		raw := hd.raw
+		calls = append(calls, func() { raw(ev) })
+	}
+	for _, hd := range specific {
+		if hd.raw != nil {
+			raw := hd.raw
+			calls = append(calls, func() { raw(ev) })
+			continue
+		}
+		if !decoded {
+			decoded = true
+			if spec := eventSpecs[ev.Type]; spec.decode != nil {
+				v, err := spec.decode(ev.Data)
+				if err != nil {
+					g.log(slog.LevelError, "failed to decode event", "event", ev.Type, "error", err)
+				} else {
+					value = v
+				}
+			}
+		}
+		if value == nil && eventSpecs[ev.Type].decode != nil {
+			continue // decoding failed; raw handlers still run
+		}
+		typed, v := hd.typed, value
+		calls = append(calls, func() { typed(v) })
+	}
+	h.run(g, ev.Type, calls)
+}
+
+// dispatchInternal calls the handlers of a library event (RECONNECT, ...).
+func (h *Handlers) dispatchInternal(g *Gateway, event string, arg any) {
+	handlers := h.get(event)
+	if len(handlers) == 0 {
+		return
+	}
+	calls := make([]func(), 0, len(handlers))
+	for _, hd := range handlers {
+		if typed := hd.typed; typed != nil {
+			calls = append(calls, func() { typed(arg) })
+		}
+	}
+	h.run(g, event, calls)
+}
+
+func (h *Handlers) run(g *Gateway, event string, calls []func()) {
+	if len(calls) == 0 {
+		return
+	}
+	exec := func() {
+		for _, call := range calls {
+			safeCall(g, event, call)
+		}
+	}
+	if g.Config.SyncEvents {
+		exec()
+	} else {
+		go exec()
+	}
+}
+
+func safeCall(g *Gateway, event string, call func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.log(slog.LevelError, "event handler panicked", "event", event, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	call()
 }

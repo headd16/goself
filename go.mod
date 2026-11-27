@@ -1,4 +1,4 @@
-module github.com/QuartzWarrior/discordgo-self
+module github.com/headd16/goself
 
 go 1.22
 
