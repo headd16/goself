@@ -1,10 +1,10 @@
 module github.com/headd16/goself
 
-go 1.22
+go 1.23
 
 require (
 	github.com/fasthttp/websocket v1.5.10
-	github.com/goccy/go-json v0.10.3
+	github.com/goccy/go-json v0.12.0
 	github.com/jeandeaual/go-locale v0.0.0-20240223122105-ce5225dcaa49
 	github.com/valyala/fasthttp v1.55.0
 )
