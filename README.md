@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/headd16/goself.svg)](https://pkg.go.dev/github.com/headd16/goself)
 [![Go Report Card](https://goreportcard.com/badge/github.com/headd16/goself)](https://goreportcard.com/report/github.com/headd16/goself)
-![Code size](https://img.shields.io/github/languages/code-size/headd16/GoSelf)
+![Code size](https://img.shields.io/github/languages/code-size/headd16/goself)
 
 GoSelf is a fast Discord library for **user accounts** ("self-bots") written in Go. It
 connects to the gateway as the Discord web client does, decodes events into
